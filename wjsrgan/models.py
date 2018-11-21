@@ -170,12 +170,11 @@ class GeneratorResNet_2(nn.Module):
         self.layers_set = []
         self.layers_set_up = []
         self.layers_set_final = nn.ModuleList()
-        self.layers_set_final_up = nn.ModuleList()
 
         self.layers_in = conv3x3(3, 64)
 
         layers = []
-        for ru in range(len(res_units) - 1):
+        for ru in range(len(res_units)):
             nunits = res_units[ru]
             curr_inp_resu = inp_res_units[ru]
             self.layers_set.insert(ru, [])
@@ -199,11 +198,7 @@ class GeneratorResNet_2(nn.Module):
 
             self.layers_set_final.append(nn.Sequential(*self.layers_set[ru]))
 
-        nunits = res_units[-1]
-        layers.append(conv3x3(inp_res_units[-1][0], nunits))
-        layers.append(nn.ReLU(True))
-
-        layers.append(nn.Conv2d(inp_res_units[-1][1], nunits, kernel_size=1, stride=1))
+        layers.append(nn.Conv2d(inp_res_units[-1][1], nunits, kernel_size=1, stride=1)) ## ****** NEED TO BE CONSIDERED
         layers.append(nn.ReLU(True))
 
         layers.append(nn.Conv2d(nunits, 3, kernel_size=1, stride=1))
@@ -214,19 +209,7 @@ class GeneratorResNet_2(nn.Module):
     def forward(self, input):
         x = self.layers_in(input)
         for ru in range(len(self.layers_set_final)):
-            if ru == 0:
-                temp = self.layers_set_final[ru](x)
-                x = x + temp
-            elif ru == 1:
-                temp = self.layers_set_final[ru](x)
-                temp2 = self.a1(x)
-                x = temp + temp2
-            elif ru == 2:
-                temp = self.layers_set_final[ru](x)
-                temp2 = self.a2(x)
-                x = temp + temp2
-            x = self.layers_set_final_up[ru](x)
-
+                x = self.layers_set_final[ru](x)
         x = self.main(x)
 
         return x
