@@ -1,8 +1,13 @@
+
+import numpy as np
 import torch.nn as nn
 import torch
 import torch.nn.functional as F
 from torchvision.models import vgg19
 import math
+
+
+img_shape = (3, 64, 64)
 
 def weights_init_normal(m):
     classname = m.__class__.__name__
@@ -12,18 +17,6 @@ def weights_init_normal(m):
         torch.nn.init.normal_(m.weight.data, 1.0, 0.02)
         torch.nn.init.constant_(m.bias.data, 0.0)
 
-class FeatureExtractor(nn.Module):
-    def __init__(self):
-        super(FeatureExtractor, self).__init__()
-
-        vgg19_model = vgg19(pretrained=True)
-
-        # Extracts features at the 11th layer
-        self.feature_extractor = nn.Sequential(*list(vgg19_model.features.children())[:12])
-
-    def forward(self, img):
-        out = self.feature_extractor(img)
-        return out
 
 def conv3x3(in_planes, out_planes, stride=1):
     "3x3 convolution with padding"
@@ -79,9 +72,9 @@ class BasicBlock(nn.Module):
         return out
 
 
-class GeneratorResNet(nn.Module):
+class GeneratorResNet_l2h(nn.Module):
     def __init__(self, ngpu=1):
-        super(GeneratorResNet, self).__init__()
+        super(GeneratorResNet_l2h, self).__init__()
         self.ngpu = ngpu
         res_units = [256, 128, 96]
         inp_res_units = [
@@ -157,9 +150,9 @@ class GeneratorResNet(nn.Module):
         return x
 
 
-class GeneratorResNet_2(nn.Module):
+class GeneratorResNet_h2l(nn.Module):
     def __init__(self, ngpu=1):
-        super(GeneratorResNet_2, self).__init__()
+        super(GeneratorResNet_h2l, self).__init__()
         self.ngpu = ngpu
         res_units = [64, 128, 256, 512, 256, 128]
         sampling_units = [-1,-1,-1,-1,1,1]
@@ -170,6 +163,8 @@ class GeneratorResNet_2(nn.Module):
         self.layers_set = []
         self.layers_set_up = []
         self.layers_set_final = nn.ModuleList()
+
+        self.layers_pre = nn.Linear(3*64*64+64, int(np.prod(img_shape)))
 
         self.layers_in = conv3x3(3, 64)
 
@@ -206,126 +201,39 @@ class GeneratorResNet_2(nn.Module):
 
         self.main = nn.Sequential(*layers)
 
-    def forward(self, input):
-        x = self.layers_in(input)
+    def forward(self, noise_img): # input : noise_img = [batch_size, 3*64*65] 
+        noise_img = self.layers_pre(noise_img)
+        noise_img = noise_img.view(noise_img.size(0), *img_shape)
+        x = self.layers_in(noise_img)
         for ru in range(len(self.layers_set_final)):
                 x = self.layers_set_final[ru](x)
         x = self.main(x)
 
         return x
 
-# class GeneratorResNet(nn.Module):
-#     def __init__(self, in_channels=3, out_channels=3, n_residual_blocks=16):
-#         super(GeneratorResNet, self).__init__()
 
-#         # First layer
-#         self.conv1 = nn.Sequential(
-#             nn.Conv2d(in_channels, 64, 9, 1, 4),
-#             nn.ReLU(inplace=True)
-#         )
-
-#         # Residual blocks
-#         res_blocks = []
-#         for _ in range(n_residual_blocks):
-#             res_blocks.append(ResidualBlock(64))
-#         self.res_blocks = nn.Sequential(*res_blocks)
-
-#         # Second conv layer post residual blocks
-#         self.conv2 = nn.Sequential(nn.Conv2d(64, 64, 3, 1, 1), nn.BatchNorm2d(64))
-
-#         # Upsampling layers
-#         upsampling = []
-#         for out_features in range(2):
-#             upsampling += [ nn.Conv2d(64, 256, 3, 1, 1),
-#                             nn.BatchNorm2d(256),
-#                             nn.PixelShuffle(upscale_factor=2),
-#                             nn.ReLU(inplace=True)]
-#         self.upsampling = nn.Sequential(*upsampling)
-
-#         # Final output layer
-#         self.conv3 = nn.Sequential(nn.Conv2d(64, out_channels, 9, 1, 4), nn.Tanh())
-
-#     def forward(self, x):
-#         out1 = self.conv1(x)
-#         out = self.res_blocks(out1)
-#         out2 = self.conv2(out)
-#         out = torch.add(out1, out2)
-#         out = self.upsampling(out)
-#         out = self.conv3(out)
-#         return out
-
-# class Discriminator(nn.Module):
-#     def __init__(self, in_channels=3):
-#         super(Discriminator, self).__init__()
-
-# #         def discriminator_block(in_filters, out_filters, stride, normalize):
-# #             """Returns layers of each discriminator block"""
-# #             layers = [nn.Conv2d(in_filters, out_filters, 3, stride, 1)]
-# #             if normalize:
-# #                 layers.append(nn.BatchNorm2d(out_filters))
-# #             layers.append(nn.LeakyReLU(0.2, inplace=True))
-# #             return layers
-
-
-#         self.layers_set = []
-
-#         self.layers_set_final = nn.ModuleList()
-
-#         #self.maxpool = nn.Sequential(nn.MaxPool2d(2,2), nn.MaxPool2d(2,2))
-
-#         res_units = [16, 32, 64, 128, 256, 512]
-
-#         layers = []
-#         in_filters = in_channels
-
-#         for ru in range(len(res_units) - 1):
-#             out_filters = res_units[ru]
-
-#             self.layers_set.insert(ru, [])
-#             if ru == 0 or ru == 1 :
-#                 self.layers_set[ru].append(BasicBlock(in_filters, out_filters, 1, True, False, True))
-#             else :
-#                 self.layers_set[ru].append(BasicBlock(in_filters, out_filters, 1, False, False, True))
-
-
-
-#             in_filters = out_filters
-
-#             self.layers_set_final.append(nn.Sequential(*self.layers_set[ru]))
-
-
-#         # Output layer
-#         layers.append(nn.Conv2d(out_filters, 1, 3, 1, 1))
-
-#         self.model = nn.Sequential(*layers)
-
-#     def forward(self, img):
-#         x = self.layers_set_final(img)
-#         return self.model(x)
-
-
-class Discriminator(nn.Module):
+class Discriminator_h2l(nn.Module):
     def __init__(self, in_channels=3):
-        super(Discriminator, self).__init__()
+        super(Discriminator_h2l, self).__init__()
 
         def discriminator_block(in_filters, out_filters, stride, normalize):
             """Returns layers of each discriminator block"""
-            layers = [nn.Conv2d(in_filters, out_filters, 3, stride, 1)]
             if normalize:
                 layers.append(nn.BatchNorm2d(out_filters))
-            layers.append(nn.LeakyReLU(0.2, inplace=True))
+            layers = [nn.LeakyReLU(0.2, inplace=False)]
+            layers.append(nn.Conv2d(in_filters, out_filters, 3, stride, 1))
             return layers
 
         layers = []
         in_filters = in_channels
         for out_filters, stride, normalize in [ (64, 1, False),
-                                                (64, 2, True),
-                                                (128, 1, True),
-                                                (128, 2, True),
-                                                (256, 1, True),
-                                                (256, 2, True),
-                                                (512, 1, True),
-                                                (512, 2, True),]:
+                                                (64, 2, False),
+                                                (128, 1, False),
+                                                (128, 2, False),
+                                                (256, 1, False),
+                                                (256, 2, False),
+                                                (512, 1, False),
+                                                (512, 2, False),]:
             layers.extend(discriminator_block(in_filters, out_filters, stride, normalize))
             in_filters = out_filters
 
@@ -335,4 +243,42 @@ class Discriminator(nn.Module):
         self.model = nn.Sequential(*layers)
 
     def forward(self, img):
-        return self.model(img)
+        x = self.model(img)
+        return x
+
+
+class Discriminator_l2h(nn.Module):
+    def __init__(self, in_channels=3):
+        super(Discriminator_l2h, self).__init__()
+
+        def discriminator_block(in_filters, out_filters, stride, normalize):
+            """Returns layers of each discriminator block"""
+            if normalize:
+                layers.append(nn.BatchNorm2d(out_filters))
+            layers = [nn.LeakyReLU(0.2, inplace=False)]
+            layers.append(nn.Conv2d(in_filters, out_filters, 3, stride, 1))
+            return layers
+
+        self.layers_in = nn.Sequential(nn.MaxPool2d(2,2), nn.MaxPool2d(2,2))
+        layers = []
+        in_filters = in_channels
+        for out_filters, stride, normalize in [ (64, 1, False),
+                                                (64, 2, False),
+                                                (128, 1, False),
+                                                (128, 2, False),
+                                                (256, 1, False),
+                                                (256, 2, False),
+                                                (512, 1, False),
+                                                (512, 2, False),]:
+            layers.extend(discriminator_block(in_filters, out_filters, stride, normalize))
+            in_filters = out_filters
+
+        # Output layer
+        layers.append(nn.Conv2d(out_filters, 1, 3, 1, 1))
+
+        self.model = nn.Sequential(*layers)
+
+    def forward(self, img):
+        img = self.layers_in(img)
+        x = self.model(img)
+        return x

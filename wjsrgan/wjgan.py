@@ -34,7 +34,9 @@ os.makedirs('saved_models', exist_ok=True)
 parser = argparse.ArgumentParser()
 parser.add_argument('--epoch', type=int, default=0, help='epoch to start training from')
 parser.add_argument('--n_epochs', type=int, default=200, help='number of epochs of training')
-parser.add_argument('--hr_dataset_name', type=str, default="CelebA", help='name of the dataset')
+parser.add_argument('--hr_dataset_name1', type=str, default="CelebA", help='name of the dataset')
+parser.add_argument('--hr_dataset_name2', type=str, default="SRtrainset_2", help='name of the dataset')
+parser.add_argument('--hr_dataset_name3', type=str, default="vggcrop_train_lp10", help='name of the dataset')
 parser.add_argument('--lr_dataset_name', type=str, default="wider_lnew", help='name of the dataset')
 parser.add_argument('--batch_size', type=int, default=16, help='size of the batches')
 parser.add_argument('--lr', type=float, default=0.0001, help='adam: learning rate')
@@ -47,29 +49,28 @@ parser.add_argument('--hr_width', type=int, default=64, help='size of high res. 
 parser.add_argument('--channels', type=int, default=3, help='number of image channels')
 parser.add_argument('--sample_interval', type=int, default=100, help='interval between sampling of images from generators')
 parser.add_argument('--checkpoint_interval', type=int, default=1, help='interval between model checkpoints')
+parser.add_argument('--update_gen', type=int, default=5, help='the number of updating generator for each images')
+parser.add_argument('--update_dis', type=int, default=1, help='the number of updating discriminator for each images')
 opt = parser.parse_args()
 print(opt)
 
 cuda = True if torch.cuda.is_available() else False
-
-# Calculate output of image discriminator (PatchGAN)
-patch_h, patch_w = int(opt.hr_height / 2**4), int(opt.hr_width / 2**4)
-patch = (opt.batch_size, 1, 1, 1)
+FloatTensor = torch.cuda.FloatTensor if cuda else torch.FloatTensor
 
 # Initialize generator and discriminator
-generator_h2l = GeneratorResNet_2()
-discriminator_h2l = Discriminator()
-feature_extractor = FeatureExtractor()
+generator_l2h = GeneratorResNet_l2h()
+generator_h2l = GeneratorResNet_h2l()
+discriminator_h2l = Discriminator_h2l()
+discriminator_l2h = Discriminator_l2h()
 
 # Losses
-criterion_GAN = torch.nn.HingeEmbeddingLoss(size_average=True)
 criterion_content = torch.nn.MSELoss()
 
 if cuda:
     generator_h2l = generator_h2l.cuda()
+    generator_l2h = generator_l2h.cuda()
     discriminator_h2l = discriminator_h2l.cuda()
-    feature_extractor = feature_extractor.cuda()
-    criterion_GAN = criterion_GAN.cuda()
+    discriminator_l2h = discriminator_l2h.cuda()
     criterion_content = criterion_content.cuda()
 
 if opt.epoch != 0:
@@ -78,11 +79,16 @@ if opt.epoch != 0:
 else:
     # Initialize weights
     generator_h2l.apply(weights_init_normal)
+    generator_l2h.apply(weights_init_normal)
     discriminator_h2l.apply(weights_init_normal)
+    discriminator_l2h.apply(weights_init_normal)
+
 
 # Optimizers
 optimizer_G_h2l = torch.optim.Adam(generator_h2l.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2))
 optimizer_D_h2l = torch.optim.Adam(discriminator_h2l.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2))
+optimizer_G_l2h = torch.optim.Adam(generator_l2h.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2))
+optimizer_D_l2h = torch.optim.Adam(discriminator_l2h.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2))
 
 # Inputs & targets memory allocation
 Tensor = torch.cuda.FloatTensor if cuda else torch.Tensor
@@ -91,10 +97,6 @@ input_hr = Tensor(opt.batch_size, opt.channels, opt.hr_height, opt.hr_width)
 input_lr2hr = Tensor(opt.batch_size, opt.channels, opt.hr_height, opt.hr_width)
 input_hr2lr = Tensor(opt.batch_size, opt.channels, opt.hr_height//4, opt.hr_width//4)
 
-
-# Adversarial ground truths
-fake = Variable(Tensor(np.ones(patch)), requires_grad=False)
-valid = Variable(Tensor(-1*np.ones(patch)), requires_grad=False)
 
 # Transforms for low resolution images and high resolution images
 lr_transforms = [   transforms.Resize((opt.hr_height//4, opt.hr_height//4), Image.BICUBIC),
@@ -111,7 +113,10 @@ lr2hr_transforms = [   transforms.Resize((opt.hr_height//4, opt.hr_height//4), I
 
 
 
-dataloader = DataLoader(ImageDataset("/data1/wonjong/Dataset/HIGH/%s/" % opt.hr_dataset_name, "/data1/wonjong/Dataset/LOW/%s/" % opt.lr_dataset_name, lr_transforms=lr_transforms, hr_transforms=hr_transforms, lr2hr_transforms = lr2hr_transforms),
+dataloader = DataLoader(ImageDataset("/data1/wonjong/Dataset/HIGH/%s/" % opt.hr_dataset_name1,
+                                    "/data1/wonjong/Dataset/HIGH/%s/" % opt.hr_dataset_name2,
+                                    "/data1/wonjong/Dataset/HIGH/%s/" % opt.hr_dataset_name3,
+ "/data1/wonjong/Dataset/LOW/%s/" % opt.lr_dataset_name, lr_transforms=lr_transforms, hr_transforms=hr_transforms, lr2hr_transforms = lr2hr_transforms),
                         batch_size=opt.batch_size, shuffle=True, num_workers=opt.n_cpu)
 
 print("hello")
@@ -126,51 +131,45 @@ for epoch in range(opt.epoch, opt.n_epochs):
         imgs_hr = Variable(input_hr.copy_(imgs['hr']))
         imgs_hr2lr = Variable(input_hr2lr.copy_(imgs['hr2lr']))
 
-        # ------------------
-        #  Train Generators
-        # ------------------
-        optimizer_G_h2l.zero_grad()
+        flat_imgs_hr = imgs_hr.view(imgs_hr.size(0), -1)
+        noise = Variable(FloatTensor(np.random.normal(0, 1, (opt.batch_size, opt.hr_width))))
+        noise_img = torch.cat((flat_imgs_hr, noise),-1)
 
-        # Generate a high resolution image from low resolution input
-        gen_lr = generator_h2l(imgs_hr)
+        for j in range(0, opt.update_gen) :
+            # ------------------
+            #  Train Generators
+            # ------------------
+            optimizer_G_h2l.zero_grad()
 
-        # Adversarial loss
-        gen_validity = discriminator_h2l(gen_lr)
-        loss_GAN = criterion_GAN(gen_validity, valid)
+            # Generate a high resolution image from low resolution input
+            gen_lr = generator_h2l(noise_img)
 
-        # # Content loss
-        # gen_features = feature_extractor(gen_hr)
-        # real_features = Variable(feature_extractor(imgs_hr).data, requires_grad=False)
-        # loss_content =  criterion_content(gen_features, real_features)
+            # Adversarial loss
+            gen_validity = discriminator_h2l(gen_lr)
+            loss_GAN = -gen_validity.mean()
 
-        # Content loss
-        loss_content = criterion_content(gen_lr, imgs_hr2lr)
+            # Content loss
+            loss_content = criterion_content(gen_lr, imgs_hr2lr)
 
-        # Total loss
-        loss_G = loss_content - 0.05 * loss_GAN
+            # Total loss
+            loss_G = loss_content + 0.05 * loss_GAN
 
-        loss_G.backward()
-        optimizer_G_h2l.step()
+            loss_G.backward()
+            optimizer_G_h2l.step()
+            
 
-        # ---------------------
-        #  Train Discriminator
-        # ---------------------
+        for j in range(0, opt.update_dis) :
+            # ---------------------
+            #  Train Discriminator
+            # ---------------------
 
-        optimizer_D_h2l.zero_grad()
+            optimizer_D_h2l.zero_grad()
+            
+            # Total loss
+            loss_D = nn.ReLU()(1.0 - discriminator_h2l(imgs_lr)).mean() + nn.ReLU()(1.0 + discriminator_h2l(gen_lr.detach())).mean()
 
-        # Loss of real and fake images
-        loss_real = criterion_GAN(discriminator_h2l(imgs_lr), valid) # imgs_hr -> dataset hr img
-        loss_fake = criterion_GAN(discriminator_h2l(gen_lr.detach()), fake)
-        
-        print(discriminator_h2l(imgs_lr))
-        print(discriminator_h2l(gen_lr.detach()))
-        # Total loss
-        loss_D = - loss_real -(1+ loss_fake)
-        print(loss_real)
-        print(loss_fake)
-
-        loss_D.backward()
-        optimizer_D_h2l.step()
+            loss_D.backward()
+            optimizer_D_h2l.step()
 
         # --------------
         #  Log Progress

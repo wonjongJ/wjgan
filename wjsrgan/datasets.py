@@ -8,12 +8,16 @@ from PIL import Image
 import torchvision.transforms as transforms
 
 class ImageDataset(Dataset):
-    def __init__(self, root_hr, root_lr, lr_transforms=None, hr_transforms=None, lr2hr_transforms=None):
+    def __init__(self, root_hr1, root_hr2, root_hr3, root_lr, lr_transforms=None, hr_transforms=None, lr2hr_transforms=None):
         self.lr_transform = transforms.Compose(lr_transforms)
         self.hr_transform = transforms.Compose(hr_transforms)
         self.lr2hr_transform = transforms.Compose(lr2hr_transforms)
 
-        self.hr_files = sorted(glob.glob(root_hr + '/*.*'))
+        hr_list1 = glob.glob(root_hr1 + '/*.*')
+        hr_list2 = glob.glob(root_hr2 + '/*.*')
+        hr_list3 = glob.glob(root_hr3 + '/*.*')
+
+        self.hr_files = sorted(hr_list1+hr_list2+hr_list3)
         self.lr_files = sorted(glob.glob(root_lr + '/*.*'))
 
 
